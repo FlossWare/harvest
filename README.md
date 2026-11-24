@@ -28,8 +28,36 @@ embedders, indexers) treats all sources identically.
 | `scrape-arxiv-cat.py <cat...>` | arXiv export API by category |
 | `scrape-hn.py` | Hacker News via the Algolia API |
 | `scrape-hf-models.py` | top-N Hugging Face model cards via the official API |
-| `clone-one.sh <owner/repo> <dir>` | single shallow clone (use with `xargs -P 3 -n 2`) |
+| `clone-one.sh <owner/repo> <dir>` | single shallow GitHub clone (use with `xargs -P 3 -n 2`) |
+| `gitlab-clone-one.sh <group/project> <dir>` | single shallow GitLab SSH clone (`GITLAB_HOST`, `REPOS_DIR` env) |
 | `clone-fpb-books.py` | parse the free-programming-books catalog, clone every GitHub-hosted book |
+| `gap-rescrape.py <gap.jsonl> <corpus_root>` | polite gap re-scraper — per-domain sequential, 3 domains parallel, honors `Retry-After` |
+| `wake.py <mac> [broadcast]` | Wake-on-LAN magic packet |
+
+## Account-aware scrapers (private corpus)
+
+These target your own authenticated accounts and write into per-account
+"vertical" directories — the account that owns the data decides where it
+lands, so separate accounts never mix. Accounts live in
+`~/.config/harvest/accounts.json` (shape in `accounts.example.json`,
+never commit the real one); credentials never sit inside corpus dirs.
+
+| Tool | What it does |
+|---|---|
+| `google_auth.py` | shared account-aware OAuth (refresh + persist); config-driven, no hardcoded identities |
+| `scrape-gmail.py [account] [max]` | Gmail messages → `<vertical>/gmail/messages/` |
+| `scrape-gdrive.py [account] [max]` | Drive files + Docs/Sheets/Slides content → `<vertical>/gdrive/` |
+| `scrape-gcalendar.py [account]` | all calendars, recurring events expanded → `<vertical>/calendar/` |
+| `scrape-gcontacts.py [account]` | Contacts → `<vertical>/contacts.jsonl` |
+| `scrape-gtasks.py [account]` | Tasks → `<vertical>/tasks.jsonl` |
+| `google-oauth-listener.py` | one-shot localhost OAuth redirect listener that captures and stores tokens (mode 600) |
+| `scrape-miro-save.py <out-dir>` | save Miro board inventory (JSON lines on stdin) as corpus items |
+| `scrape-jira.py project KEY \\| personal \\| jql '<q>' <label>` | Jira Cloud via REST v3 — GET + cursor pagination; env `JIRA_HOST/EMAIL/TOKEN` |
+| `scrape-confluence.py spaces \\| scrape KEY...` | Confluence Cloud pages; per-page retry backoff; env `CONFLUENCE_HOST/EMAIL/TOKEN` |
+
+Org-specific details (which spaces, which projects, which JQL) are
+configuration, not code — pass them as arguments; nothing
+workplace-identifying is baked in.
 
 ## Known gotchas (paid for in debugging)
 

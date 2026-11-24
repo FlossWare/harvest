@@ -1,0 +1,16 @@
+{
+  "work": {
+    "creds": "~/.gmail-mcp/credentials.json",
+    "keys": "~/.gmail-mcp/gcp-oauth.keys.json",
+    "email": "you@example.com",
+    "format": "tokens-nested",
+    "vertical": "~/corpus/private/example-org"
+  },
+  "personal": {
+    "creds": "~/.gmail-mcp/personal-credentials.json",
+    "keys": null,
+    "email": "you@personal.example",
+    "format": "flat",
+    "vertical": "~/corpus/private/example-person"
+  }
+}

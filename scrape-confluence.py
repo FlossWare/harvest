@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Scrape Confluence Cloud pages via the REST API.
+
+Usage:
+  python3 scrape-confluence.py spaces                # list accessible spaces
+  python3 scrape-confluence.py scrape KEY [KEY...]   # full page pull per space
+
+Pages land in <out>/<SPACEKEY>/<pageId>.json with
+{url, title, content(storage HTML), version, ancestors}.
+Politeness: 0.5s between calls. Resumable (existing pageIds skipped).
+Retries each page with 5/15/30s backoff on connection resets / throttling.
+
+Auth (env): CONFLUENCE_HOST (e.g. https://your-company.atlassian.net/wiki),
+CONFLUENCE_EMAIL, CONFLUENCE_TOKEN (API token).
+Out dir (env): HARVEST_CONFLUENCE_DIR (default ~/corpus/confluence).
+
+Pagination note: the Cloud API returns no totalSize — page via
+_links.next presence.
+"""
+import base64, json, os, re, sys, time, urllib.parse, urllib.request
+from pathlib import Path
+
+BASE = (os.environ.get("CONFLUENCE_HOST")
+        or "https://example.atlassian.net/wiki").rstrip("/") + "/rest/api"
+OUT = Path(os.environ.get("HARVEST_CONFLUENCE_DIR") or Path.home() / "corpus/confluence")
+RATE = 0.5
+
+
+def creds():
+    email, token = os.environ.get("CONFLUENCE_EMAIL"), os.environ.get("CONFLUENCE_TOKEN")
+    if not email or not token:
+        sys.exit("set CONFLUENCE_HOST, CONFLUENCE_EMAIL, CONFLUENCE_TOKEN (API token)")
+    auth = base64.b64encode(f"{email}:{token}".encode()).decode()
+    return {"Authorization": f"Basic {auth}", "Accept": "application/json"}
+
+
+HDR = creds()
+
+
+def api(path, params=None):
+    url = f"{BASE}/{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=HDR)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read())
+
+
+def list_spaces():
+    start, spaces = 0, []
+    while True:
+        d = api("space", {"limit": 100, "start": start})
+        spaces.extend(d["results"])
+        if not d["results"] or "_links" in d and d["_links"].get("next") is None and len(d["results"]) < 100:
+            break
+        start += 100
+        time.sleep(RATE)
+    print(f"{len(spaces)} accessible spaces")
+    for s in spaces:
+        print(f"  {s['key']:12s} {s.get('name', '')[:60]}")
+
+
+def strip_html(html):
+    """Crude storage-format -> text for a content preview; keep the full
+    storage XML in the item body since ingestion chunkers handle it."""
+    text = re.sub(r"<br\s*/?>", "\n", html or "")
+    text = re.sub(r"</p>|</h[1-6]>|</li>|</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def fetch_page(pid):
+    """Fetch one page with 5/15/30s backoff retries."""
+    try:
+        return api(f"content/{pid}", {"expand": "body.storage,ancestors,version"})
+    except Exception as first_e:
+        for wait in (5, 15, 30):
+            time.sleep(wait)
+            try:
+                return api(f"content/{pid}", {"expand": "body.storage,ancestors,version"})
+            except Exception:
+                continue
+        raise first_e
+
+
+def scrape_space(key):
+    out = OUT / key
+    out.mkdir(parents=True, exist_ok=True)
+    saved = len(list(out.glob("*.json")))
+    print(f"[{key}] {saved} present; enumerating pages via CQL...", flush=True)
+    start = 0
+    while True:
+        d = api("content/search", {
+            "cql": f'space="{key}" and type=page', "limit": 50, "start": start})
+        results = d.get("results", [])
+        for r in results:
+            pid = r["id"]
+            f = out / f"{pid}.json"
+            if f.exists():
+                continue
+            try:
+                page = fetch_page(pid)
+            except Exception as e:
+                print(f"[{key}] page {pid} fail after retries: {e}", flush=True)
+                time.sleep(RATE)
+                continue
+            storage = page.get("body", {}).get("storage", {}).get("value", "")
+            f.write_text(json.dumps({
+                "url": f"{BASE.split('/rest')[0]}/pages/{pid}",
+                "title": page.get("title", ""),
+                "content": storage[:400_000],
+                "text_preview": strip_html(storage)[:4000],
+                "version": page.get("version", {}).get("number"),
+                "space": key,
+                "ancestors": [a.get("title") for a in page.get("ancestors", [])],
+            }))
+            saved += 1
+            if saved % 50 == 0:
+                print(f"[{key}] {saved} saved", flush=True)
+            time.sleep(RATE)
+        start += 50
+        has_more = bool(d.get("_links", {}).get("next")) and len(results) == 50
+        if not has_more:
+            break
+    print(f"[{key}] DONE: {saved} pages", flush=True)
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "spaces":
+        list_spaces()
+    elif cmd == "scrape":
+        for key in sys.argv[2:]:
+            scrape_space(key)
+    else:
+        print(__doc__)
