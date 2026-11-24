@@ -69,7 +69,10 @@ def scrape_query(jql, label):
     while not is_last:
         params = {"jql": jql, "maxResults": BATCH, "fields": fields}
         if page_token:
-            params["pageToken"] = page_token
+            # NB: the request param is nextPageToken (same name as the
+            # response field). `pageToken` is silently ignored -> infinite
+            # loop re-fetching page 1 (verified 2026-11-24).
+            params["nextPageToken"] = page_token
         try:
             d = api("GET", "search/jql", params=params)
         except Exception as e:
