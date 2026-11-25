@@ -23,6 +23,7 @@ embedders, indexers) treats all sources identically.
 |---|---|
 | `scrape-crawl.py <name> <allow_regex> <max> <seeds...>` | polite seed crawler for sites without sitemaps; robust text extraction that survives unclosed `<nav>` tags |
 | `scrape-langs.py <target>` | sitemap-driven docs scraper (97 targets in `targets_example.py`; copy to `targets.py`) |
+| `scrape-docs.py` | append-style `TARGETS +=` waves of language-docs targets for `scrape-langs.py` |
 | `scrape-parallel.py` | domain-grouped parallel driver — one lane per domain across all targets |
 | `crawl-wave.py` | batch crawler config for no-sitemap sites |
 | `scrape-arxiv-cat.py <cat...>` | arXiv export API by category |
@@ -58,6 +59,14 @@ never commit the real one); credentials never sit inside corpus dirs.
 Org-specific details (which spaces, which projects, which JQL) are
 configuration, not code — pass them as arguments; nothing
 workplace-identifying is baked in.
+
+## Not here
+
+Store-side tooling — corpus integrity manifests, the URL master index,
+PDF change detection — lives in
+[FlossWare/silo](https://github.com/FlossWare/silo). This repo is the
+harvest side only: everything that pulls data, nothing that verifies
+the store.
 
 ## Known gotchas (paid for in debugging)
 
