@@ -88,10 +88,12 @@ def scrape_space(key):
     out.mkdir(parents=True, exist_ok=True)
     saved = len(list(out.glob("*.json")))
     print(f"[{key}] {saved} present; enumerating pages via CQL...", flush=True)
-    start = 0
+    # Pagination: follow _links.next VERBATIM (it carries a cursor).
+    # The `start` param is IGNORED by content/search beyond shallow
+    # depths (start=500 re-serves page 1), which causes an infinite loop.
+    params = {"cql": f'space="{key}" and type=page', "limit": 50}
     while True:
-        d = api("content/search", {
-            "cql": f'space="{key}" and type=page', "limit": 50, "start": start})
+        d = api("content/search", params=params)
         results = d.get("results", [])
         for r in results:
             pid = r["id"]
@@ -118,10 +120,10 @@ def scrape_space(key):
             if saved % 50 == 0:
                 print(f"[{key}] {saved} saved", flush=True)
             time.sleep(RATE)
-        start += 50
-        has_more = bool(d.get("_links", {}).get("next")) and len(results) == 50
-        if not has_more:
+        nxt = d.get("_links", {}).get("next")
+        if not nxt or len(results) < 50:
             break
+        params = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(nxt).query))
     print(f"[{key}] DONE: {saved} pages", flush=True)
 
 
