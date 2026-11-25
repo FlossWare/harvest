@@ -27,8 +27,12 @@ BATCH = 50
 
 def creds():
     email, token = os.environ.get("JIRA_EMAIL"), os.environ.get("JIRA_TOKEN")
+    host = os.environ.get("JIRA_HOST")
     if not email or not token:
         sys.exit("set JIRA_HOST, JIRA_EMAIL, JIRA_TOKEN (API token)")
+    if not host:
+        # never send real credentials to the placeholder fallback host
+        sys.exit("set JIRA_HOST (e.g. https://your-company.atlassian.net)")
     auth = base64.b64encode(f"{email}:{token}".encode()).decode()
     return {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
 
@@ -57,16 +61,19 @@ def extract_text(node):
     return ""
 
 
-def scrape_query(jql, label):
-    """Run a JQL query and save all issues (GET with cursor pagination)."""
+def scrape_query(jql, label, overwrite=False):
+    """Run a JQL query and save all issues (GET with cursor pagination).
+
+    overwrite=True re-fetches issues already on disk (incremental mode,
+    where the JQL window already selects only recently-updated issues)."""
     fields = ["summary", "description", "status", "labels", "assignee",
               "reporter", "priority", "issuetype", "created", "updated",
               "resolution", "fixVersions", "components", "comment"]
     saved = 0
     page_token = None
-    is_last = False
+    fails = 0
     print(f"[{label}] starting: {jql[:60]}...", flush=True)
-    while not is_last:
+    while True:
         params = {"jql": jql, "maxResults": BATCH, "fields": fields}
         if page_token:
             # NB: the request param is nextPageToken (same name as the
@@ -75,8 +82,15 @@ def scrape_query(jql, label):
             params["nextPageToken"] = page_token
         try:
             d = api("GET", "search/jql", params=params)
+            fails = 0
         except Exception as e:
-            print(f"[{label}] search fail: {e}", flush=True)
+            # bounded retries: a bad JQL (400), expired token (401) or
+            # wrong host (404) must not loop forever
+            fails += 1
+            print(f"[{label}] search fail ({fails}/10): {e}", flush=True)
+            if fails >= 10:
+                print(f"[{label}] ABORT: too many search failures", flush=True)
+                return
             time.sleep(10)
             continue
         issues = d.get("issues", [])
@@ -87,7 +101,7 @@ def scrape_query(jql, label):
             out_dir = OUT / project
             out_dir.mkdir(parents=True, exist_ok=True)
             f = out_dir / f"{key}.json"
-            if f.exists():
+            if f.exists() and not overwrite:
                 continue
             desc = extract_text(f_fields.get("description")) if f_fields.get("description") else ""
             comments = []
@@ -106,7 +120,8 @@ def scrape_query(jql, label):
                 f"Fix Versions: {', '.join(v.get('name', '') for v in f_fields.get('fixVersions', []))}\n\n"
                 f"Comments ({len(comments)}):\n" + "\n---\n".join(comments)
             )
-            f.write_text(json.dumps({
+            tmp = out_dir / f"{key}.json.tmp"
+            tmp.write_text(json.dumps({
                 "url": f"{BASE.split('/rest')[0]}/browse/{key}",
                 "title": f"{key}: {f_fields.get('summary', '')}",
                 "content": content[:400_000],
@@ -117,9 +132,14 @@ def scrape_query(jql, label):
                 "created": f_fields.get("created", ""),
                 "updated": f_fields.get("updated", ""),
             }))
+            tmp.replace(f)  # atomic: a crash never leaves a truncated skip-forever file
             saved += 1
         page_token = d.get("nextPageToken")
-        is_last = d.get("isLast", True)
+        # end on an absent token; a missing isLast must not stop early,
+        # and isLast=false with no token must not restart from page 1
+        is_last = d.get("isLast", page_token is None)
+        if is_last or not page_token:
+            break
         if saved % 50 == 0:
             print(f"[{label}] {saved} saved (isLast={is_last})", flush=True)
         time.sleep(RATE)
@@ -132,6 +152,13 @@ def main():
         scrape_query("assignee = currentUser()", "assigned")
         scrape_query("reporter = currentUser()", "reported")
         scrape_query("watcher = currentUser()", "watching")
+    elif scope == "daily":
+        # Incremental sync: only issues touched in the last 2 days,
+        # overwriting what's on disk (edits + new issues).
+        scrape_query(
+            "(assignee = currentUser() OR reporter = currentUser()"
+            " OR watcher = currentUser()) AND updated >= -2d",
+            "personal-incr", overwrite=True)
     elif scope == "project":
         if len(sys.argv) < 3:
             print("usage: scrape-jira.py project KEY")

@@ -17,7 +17,7 @@ Out dir (env): HARVEST_CONFLUENCE_DIR (default ~/corpus/confluence).
 Pagination note: the Cloud API returns no totalSize — page via
 _links.next presence.
 """
-import base64, json, os, re, sys, time, urllib.parse, urllib.request
+import base64, html, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 BASE = (os.environ.get("CONFLUENCE_HOST")
@@ -30,6 +30,9 @@ def creds():
     email, token = os.environ.get("CONFLUENCE_EMAIL"), os.environ.get("CONFLUENCE_TOKEN")
     if not email or not token:
         sys.exit("set CONFLUENCE_HOST, CONFLUENCE_EMAIL, CONFLUENCE_TOKEN (API token)")
+    if not os.environ.get("CONFLUENCE_HOST"):
+        # never send real credentials to the placeholder fallback host
+        sys.exit("set CONFLUENCE_HOST (e.g. https://your-company.atlassian.net/wiki)")
     auth = base64.b64encode(f"{email}:{token}".encode()).decode()
     return {"Authorization": f"Basic {auth}", "Accept": "application/json"}
 
@@ -60,45 +63,72 @@ def list_spaces():
         print(f"  {s['key']:12s} {s.get('name', '')[:60]}")
 
 
-def strip_html(html):
+def strip_html(storage_html):
     """Crude storage-format -> text for a content preview; keep the full
     storage XML in the item body since ingestion chunkers handle it."""
-    text = re.sub(r"<br\s*/?>", "\n", html or "")
+    text = re.sub(r"<br\s*/?>", "\n", storage_html or "")
     text = re.sub(r"</p>|</h[1-6]>|</li>|</tr>", "\n", text)
     text = re.sub(r"<[^>]+>", "", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    return html.unescape(re.sub(r"\n{3,}", "\n\n", text).strip())
 
 
 def fetch_page(pid):
-    """Fetch one page with 5/15/30s backoff retries."""
+    """Fetch one page with 5/15/30s backoff retries (transient errors only)."""
+    expand = {"expand": "body.storage,ancestors,version"}
     try:
-        return api(f"content/{pid}", {"expand": "body.storage,ancestors,version"})
-    except Exception as first_e:
+        return api(f"content/{pid}", expand)
+    except urllib.error.HTTPError as e:
+        if e.code not in (429, 500, 502, 503, 504):
+            raise  # permanent (401/403/404...) — don't burn 50s of backoff
+        last_e = e
         for wait in (5, 15, 30):
             time.sleep(wait)
             try:
-                return api(f"content/{pid}", {"expand": "body.storage,ancestors,version"})
-            except Exception:
+                return api(f"content/{pid}", expand)
+            except urllib.error.HTTPError as e2:
+                last_e = e2
+                if e2.code not in (429, 500, 502, 503, 504):
+                    raise
                 continue
-        raise first_e
+            except Exception as e2:
+                last_e = e2
+                continue
+        raise last_e
+    except Exception as first_e:
+        last_e = first_e
+        for wait in (5, 15, 30):
+            time.sleep(wait)
+            try:
+                return api(f"content/{pid}", expand)
+            except Exception as e2:
+                last_e = e2
+                continue
+        raise last_e
 
 
-def scrape_space(key):
+def scrape_space(key, since=None):
+    """since='YYYY-MM-DD' → incremental mode: only pages modified since
+    that date, overwriting what's on disk. None → full pull, skip existing."""
     out = OUT / key
     out.mkdir(parents=True, exist_ok=True)
     saved = len(list(out.glob("*.json")))
-    print(f"[{key}] {saved} present; enumerating pages via CQL...", flush=True)
+    overwrite = since is not None
+    cql = f'space="{key}" and type=page'
+    if since:
+        cql += f' and lastModified >= "{since}"'
+    print(f"[{key}] {saved} present; enumerating pages via CQL"
+          f"{' (since ' + since + ')' if since else ''}...", flush=True)
     # Pagination: follow _links.next VERBATIM (it carries a cursor).
     # The `start` param is IGNORED by content/search beyond shallow
     # depths (start=500 re-serves page 1), which causes an infinite loop.
-    params = {"cql": f'space="{key}" and type=page', "limit": 50}
+    params = {"cql": cql, "limit": 50}
     while True:
         d = api("content/search", params=params)
         results = d.get("results", [])
         for r in results:
             pid = r["id"]
             f = out / f"{pid}.json"
-            if f.exists():
+            if f.exists() and not overwrite:
                 continue
             try:
                 page = fetch_page(pid)
@@ -107,7 +137,8 @@ def scrape_space(key):
                 time.sleep(RATE)
                 continue
             storage = page.get("body", {}).get("storage", {}).get("value", "")
-            f.write_text(json.dumps({
+            tmp = out / f"{pid}.json.tmp"
+            tmp.write_text(json.dumps({
                 "url": f"{BASE.split('/rest')[0]}/pages/{pid}",
                 "title": page.get("title", ""),
                 "content": storage[:400_000],
@@ -116,12 +147,16 @@ def scrape_space(key):
                 "space": key,
                 "ancestors": [a.get("title") for a in page.get("ancestors", [])],
             }))
+            tmp.replace(f)  # atomic: a crash never leaves a truncated skip-forever file
             saved += 1
             if saved % 50 == 0:
                 print(f"[{key}] {saved} saved", flush=True)
             time.sleep(RATE)
         nxt = d.get("_links", {}).get("next")
-        if not nxt or len(results) < 50:
+        # follow the cursor until it is absent — a short page can still
+        # carry a next cursor (permission filtering), and stopping early
+        # silently loses the rest of the space
+        if not nxt:
             break
         params = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(nxt).query))
     print(f"[{key}] DONE: {saved} pages", flush=True)
@@ -134,5 +169,11 @@ if __name__ == "__main__":
     elif cmd == "scrape":
         for key in sys.argv[2:]:
             scrape_space(key)
+    elif cmd == "update":
+        # incremental: pages modified in the last 2 days, overwrite
+        import datetime
+        since = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+        for key in sys.argv[2:]:
+            scrape_space(key, since=since)
     else:
         print(__doc__)

@@ -21,7 +21,7 @@ from queue import Queue
 import requests
 
 PER_DOMAIN_DELAY = 1.5
-DOMAIN_WORKERS = 3
+DOMAIN_WORKERS = 8  # politeness is per-domain sequential; workers = distinct domains in flight
 TIMEOUT = 30
 MAX_TRIES = 3
 UA = "FlossWare-corpus-rescrape/1.0 (personal knowledge base; contact: sfloess)"

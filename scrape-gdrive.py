@@ -6,18 +6,21 @@ configured account scrapes into its own vertical directory,
 e.g. <vertical>/gdrive/
 
   docs/<docId>.json     — Google Docs (text content via Docs API)
-  sheets/<fileId>.json  — Google Sheets (content via CSV export)
+  sheets/<fileId>.json  — Google Sheets (content via CSV export — NB:
+                         only the FIRST worksheet is exported)
   slides/<fileId>.json  — Google Slides (content via text export)
-  files/<fileId>        — binary files (PDFs, images, etc. — downloaded)
+  files/<fileId>        — binary files (PDFs only — see below)
 
 Usage: python3 scrape-gdrive.py [account] [max_files]   # default 5000
 """
-import json, mimetypes, os, re, sys, time, urllib.request
+import json, mimetypes, os, re, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from google_auth import resolve, api as google_api
 
+if len(sys.argv) > 1 and sys.argv[1] not in ("work", "personal") and not sys.argv[1].isdigit():
+    sys.exit(f"unknown account {sys.argv[1]!r} (expected 'work' or 'personal')")
 ACCOUNT = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in ("work", "personal") else "work"
 MAX = int(sys.argv[-1]) if sys.argv[-1].isdigit() else 5000
 RATE = 0.3
@@ -28,10 +31,39 @@ def api(url, binary=False):
     return google_api(url, ACCOUNT, binary=binary)
 
 
+def _collection_pdfs():
+    """Basenames of PDFs already in the corpus (cloned repos, prior
+    harvests, etc.) — Drive PDFs matching one of these are skipped
+    (dedupe by filename). Set HARVEST_COLLECTION_PDF_DIR to enable;
+    unset = no dedupe."""
+    root = os.environ.get("HARVEST_COLLECTION_PDF_DIR")
+    if not root:
+        return set()
+    names = set()
+    for p in Path(root).rglob("*.pdf"):
+        names.add(p.name.lower())
+    return names
+
+
+COLLECTION_PDFS = _collection_pdfs()
+
+
+def needs_update(out, modified):
+    """Edit-aware skip: re-fetch when the listing's modifiedTime differs
+    from what the saved item recorded (new file OR edited file)."""
+    if not out.exists():
+        return True
+    try:
+        return json.loads(out.read_text()).get("modifiedTime") != modified
+    except Exception:
+        return True
+
+
 def list_files():
     files, page_token = [], None
     while len(files) < MAX:
         url = ("https://www.googleapis.com/drive/v3/files?pageSize=200"
+               "&q=trashed%3Dfalse"
                "&fields=nextPageToken,files(id,name,mimeType,modifiedTime,size,parents,webViewLink)")
         if page_token:
             url += f"&pageToken={page_token}"
@@ -93,7 +125,7 @@ def main():
         try:
             if mime == "application/vnd.google-apps.document":
                 out = OUT / "docs" / f"{fid}.json"
-                if out.exists():
+                if not needs_update(out, f.get("modifiedTime")):
                     continue
                 title, text = fetch_doc(fid)
                 out.write_text(json.dumps({
@@ -107,7 +139,7 @@ def main():
                           "application/vnd.google-apps.presentation"):
                 subdir = "sheets" if "spreadsheet" in mime else "slides"
                 out = OUT / subdir / f"{fid}.json"
-                if out.exists():
+                if not needs_update(out, f.get("modifiedTime")):
                     continue
                 content = export_file(fid, mime)
                 if isinstance(content, bytes):
@@ -120,16 +152,38 @@ def main():
                     "modifiedTime": f.get("modifiedTime", ""),
                 }))
             else:
-                # binary file (PDF, image, etc.) — download if small enough
+                # binary file — NO binaries except PDFs, and PDFs only if
+                # not already in the collection (dedupe by filename)
+                if mime != "application/pdf":
+                    continue
+                if name.lower() in COLLECTION_PDFS:
+                    continue
                 size = int(f.get("size", 0))
                 if size > 50_000_000:  # skip >50MB
                     continue
                 out = OUT / "files" / fid
-                if out.exists():
-                    continue
+                meta = OUT / "files" / f"{fid}.meta.json"
+                # edit-aware: re-download when size or modifiedTime changed
+                # (sidecar records file size + timestamp for PDFs)
+                if out.exists() and meta.exists():
+                    try:
+                        m = json.loads(meta.read_text())
+                        if (m.get("size") == size
+                                and m.get("modifiedTime") == f.get("modifiedTime")):
+                            continue
+                    except Exception:
+                        pass
                 content = api(f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
                               binary=True)
+                # guard: some Drive setups use client-side encryption —
+                # downloads can come back as unreadable ciphertext. Only
+                # keep files whose magic bytes match the mimeType's claim.
+                if not content.startswith(b"%PDF"):
+                    continue
                 out.write_bytes(content)
+                meta.write_text(json.dumps({
+                    "name": name, "size": size,
+                    "modifiedTime": f.get("modifiedTime"), "mimeType": mime}))
             saved += 1
             if saved % 25 == 0:
                 print(f"  {saved} saved ({i+1}/{len(files)})", flush=True)
