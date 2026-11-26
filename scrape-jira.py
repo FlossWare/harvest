@@ -37,7 +37,16 @@ def creds():
     return {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
 
 
-HDR = creds()
+_HDR = None
+
+
+def _hdr():
+    """Lazy credentials: import-time creds() could sys.exit before any
+    tooling that imports this module gets a chance to run."""
+    global _HDR
+    if _HDR is None:
+        _HDR = creds()
+    return _HDR
 
 
 def api(method, path, body=None, params=None):
@@ -45,8 +54,13 @@ def api(method, path, body=None, params=None):
     if params:
         url += "?" + urllib.parse.urlencode(params, doseq=True)
     data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers=HDR, method=method)
-    with urllib.request.urlopen(req, timeout=60) as r:
+    req = urllib.request.Request(url, data=data, headers=_hdr(), method=method)
+    # no-redirect opener: urllib re-sends Authorization to redirect
+    # targets; refuse redirects instead (mcp/client hardening)
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    with urllib.request.build_opener(_NoRedirect).open(req, timeout=60) as r:
         return json.loads(r.read() or b"{}")
 
 
@@ -70,6 +84,7 @@ def scrape_query(jql, label, overwrite=False):
               "reporter", "priority", "issuetype", "created", "updated",
               "resolution", "fixVersions", "components", "comment"]
     saved = 0
+    _seen_tokens = set()  # repeated-token loop guard
     page_token = None
     fails = 0
     print(f"[{label}] starting: {jql[:60]}...", flush=True)
@@ -124,7 +139,9 @@ def scrape_query(jql, label, overwrite=False):
             tmp.write_text(json.dumps({
                 "url": f"{BASE.split('/rest')[0]}/browse/{key}",
                 "title": f"{key}: {f_fields.get('summary', '')}",
-                "content": content[:400_000],
+                "content": (content[:400_000] + "\n[TRUNCATED at 400000 chars]"
+                            if len(content) > 400_000 else content),
+                "content_truncated": len(content) > 400_000,
                 "key": key,
                 "status": (f_fields.get("status", {}) or {}).get("name", ""),
                 "labels": f_fields.get("labels", []),
@@ -135,6 +152,11 @@ def scrape_query(jql, label, overwrite=False):
             tmp.replace(f)  # atomic: a crash never leaves a truncated skip-forever file
             saved += 1
         page_token = d.get("nextPageToken")
+        if page_token and page_token in _seen_tokens:
+            print(f"  WARNING: repeated pageToken {page_token!r}; stopping", flush=True)
+            page_token = None
+        if page_token:
+            _seen_tokens.add(page_token)
         # end on an absent token; a missing isLast must not stop early,
         # and isLast=false with no token must not restart from page 1
         is_last = d.get("isLast", page_token is None)

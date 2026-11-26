@@ -6,7 +6,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
-DEST = Path.home() / ".FlossWare/sources/web-scrape"
+DEST = Path.home() / ".FlossWare/corpus/public/web-scrape"
 UA = {"User-Agent": "FlossWare-corpus/1.0 (research; contact: sfloess)"}
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
@@ -16,7 +16,8 @@ except ImportError:
     try:
         from targets_example import TARGETS
     except ImportError:
-        # no targets file — the inline TARGETS += blocks below still work
+        # base targets file was stripped during the sources cleanup;
+        # the inline TARGETS += blocks below still work
         TARGETS = []
 
 class TextExtractor(HTMLParser):
@@ -118,8 +119,12 @@ def scrape(name, sitemap_url, path_filter, max_pages):
     print(f"[{name}] {count} present; enumerating...", flush=True)
     fetched = 0
     fails = 0
+    scanned = 0
     for url in sitemap_urls(sitemap_url):
-        if fetched >= max_pages: break
+        scanned += 1
+        # enumeration bound: max_pages counts WRITES, so a resumed run
+        # mostly skipping must not walk an unbounded sitemap
+        if scanned >= 200_000 or fetched >= max_pages: break
         path = urlparse(url).path
         if path_filter and not re.search(path_filter, url): continue
         if path.lower().endswith((".pdf",".png",".jpg",".jpeg",".gif",".zip",".xml",".dtd")): continue
@@ -127,6 +132,8 @@ def scrape(name, sitemap_url, path_filter, max_pages):
         slug = f"{urlparse(url).netloc.split('.')[0]}_{slug}"[:190]
         sf = out / f"{slug}.json"
         if sf.exists():
+            # resume or collision: skip only when THIS url is already saved;
+            # a different url mapping to the same slug gets disambiguated
             try:
                 if json.loads(sf.read_text(errors="replace")).get("url") == url:
                     continue
@@ -147,8 +154,13 @@ def scrape(name, sitemap_url, path_filter, max_pages):
                 print(f"[{name}] WARNING: {fails} fetch failures so far", flush=True)
             continue
         ex = TextExtractor()
-        try: ex.feed(html)
-        except Exception: continue
+        try:
+            ex.feed(html)
+        except Exception:
+            # parse failures must back off too — the bare continue
+            # bypassed the politeness sleep entirely
+            time.sleep(1)
+            continue
         title, text = ex.text()
         if len(text) < 200: continue
         (out / f"{slug}.json").write_text(json.dumps({"url":url,"title":title or path,"content":text[:400_000]}))
@@ -178,7 +190,7 @@ TARGETS += [
 ]
 # VPN / security / productivity tools (2026-11-24)
 # Authy + Trello apps are closed-source: docs only (Trello docs already
-# covered via the Atlassian wave). FreeOTP docs live in repo READMEs.
+# in corpus via the Atlassian wave). FreeOTP docs live in repo READMEs.
 TARGETS += [
     ("openvpn-docs", "https://openvpn.net/sitemap.xml", None, 15000),
     ("bitwarden-docs", "https://bitwarden.com/sitemap.xml", None, 15000),
@@ -187,7 +199,7 @@ TARGETS += [
 ]
 
 # NOTE: keep the __main__ block LAST — TARGETS appended after it are
-# invisible to the CLI (that bug silently skipped scrapes twice).
+# invisible to the CLI (that bug silently skipped scrapes twice today).
 if __name__ == "__main__":
     import sys
     only = sys.argv[1] if len(sys.argv) > 1 else None
