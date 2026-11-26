@@ -21,6 +21,8 @@ for line in sys.stdin:
     except Exception:
         continue
     bid = board.get("miro_url", "").rstrip("/").split("/")[-1].replace("=", "")
+    if bid and not re.fullmatch(r"[A-Za-z0-9_.=-]+", bid):
+        bid = ""
     if not bid:
         continue
     f = OUT / f"{bid}.json"

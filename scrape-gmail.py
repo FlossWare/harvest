@@ -32,15 +32,21 @@ def gmail(method, path):
 
 
 def decode_body(payload):
-    """Extract text from a Gmail message payload."""
-    if not payload:
-        return ""
-    parts = [payload] + payload.get("parts", [])
+    """Extract text from a Gmail message payload (recursively — nested
+    multipart bodies were silently lost by the flat one-level walk)."""
     texts = []
-    for p in parts:
-        if p.get("mimeType", "").startswith("text/") and p.get("body", {}).get("data"):
-            data = base64.urlsafe_b64decode(p["body"]["data"])
+
+    def walk(node):
+        if node.get("mimeType", "").startswith("multipart/") and "parts" in node:
+            for p in node["parts"]:
+                walk(p)
+        elif node.get("mimeType", "").startswith("text/") \
+                and node.get("body", {}).get("data"):
+            data = base64.urlsafe_b64decode(node["body"]["data"])
             texts.append(data.decode("utf-8", "replace"))
+
+    if payload:
+        walk(payload)
     return "\n\n".join(texts)
 
 
@@ -75,7 +81,7 @@ def main():
             continue
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
         body = decode_body(msg.get("payload", {}))
-        f.write_text(json.dumps({
+        item = json.dumps({
             "url": f"https://mail.google.com/#inbox/{mid}",
             "title": headers.get("Subject", "(no subject)"),
             "content": (f"From: {headers.get('From', '')}\n"
@@ -85,7 +91,10 @@ def main():
             "date": headers.get("Date", ""),
             "labels": msg.get("labelIds", []),
             "snippet": msg.get("snippet", ""),
-        }))
+        })
+        tmp = f.with_suffix(".json.tmp")
+        tmp.write_text(item)
+        tmp.replace(f)
         saved += 1
         if saved % 100 == 0:
             print(f"  {saved} saved ({i+1}/{len(msgs)})", flush=True)

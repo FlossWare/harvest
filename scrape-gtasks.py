@@ -43,8 +43,8 @@ def main():
         return
 
     total = 0
-    with OUT.open("w") as f:
-        for tl in lists:
+    records = []
+    for tl in lists:
             tasks, token = [], None
             while True:
                 url = (f"https://tasks.googleapis.com/tasks/v1/lists/{tl['id']}/tasks"
@@ -63,7 +63,7 @@ def main():
                     break
                 time.sleep(RATE)
             for t in tasks:
-                f.write(json.dumps({
+                records.append(json.dumps({
                     "url": f"https://tasks.google.com/",
                     "title": t.get("title", "(no title)"),
                     "content": (f"List: {tl.get('title','')}\nStatus: {t.get('status','')}\n"
@@ -72,9 +72,12 @@ def main():
                     "status": t.get("status"),
                     "due": t.get("due"),
                     "updated": t.get("updated"),
-                }) + "\n")
+                }))
                 total += 1
             print(f"  {tl.get('title')}: {len(tasks)} tasks", flush=True)
+    tmp = OUT.with_suffix(".json.tmp")
+    tmp.write_text("\n".join(records) + ("\n" if records else ""))
+    tmp.replace(OUT)
     print(f"TASKS DONE: {total} tasks across {len(lists)} lists", flush=True)
 
 

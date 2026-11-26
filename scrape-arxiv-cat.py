@@ -32,7 +32,10 @@ def scrape_cat(cat):
     prog_file = out / ".progress.json"
     start = 0
     if prog_file.exists():
-        start = json.loads(prog_file.read_text()).get("start", 0)
+        try:
+            start = json.loads(prog_file.read_text()).get("start", 0)
+        except ValueError:
+            start = 0
     print(f"[{cat}] resuming at result {start}", flush=True)
     total = None
     while total is None or start < min(total, MAX_PER_CAT):
@@ -59,7 +62,7 @@ def scrape_cat(cat):
         for e in entries:
             aid = e.find("a:id", NS).text.split("/abs/")[-1]
             title = " ".join(e.find("a:title", NS).text.split())
-            abstract = " ".join(e.find("a:summary", NS).text.split())
+            abstract = " ".join((e.find("a:summary", NS).text or "").split())
             authors = [a.find("a:name", NS).text for a in e.findall("a:author", NS)]
             pub = e.find("a:published", NS).text
             (out / f"{aid.replace('/', '_')}.json").write_text(json.dumps({

@@ -9,6 +9,7 @@ Full history (no timeMin), recurring events expanded (singleEvents=true).
 Usage: python3 scrape-gcalendar.py [account]   # work (default) | personal
 """
 import json, re, sys, time
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -50,7 +51,8 @@ def main():
         caldir.mkdir(parents=True, exist_ok=True)
         events, token = 0, None
         while True:
-            url = (f"https://www.googleapis.com/calendar/v3/calendars/{cid}/events"
+            url = (f"https://www.googleapis.com/calendar/v3/calendars/"
+                   f"{urllib.parse.quote(cid, safe='')}/events"
                    "?singleEvents=true&maxResults=250"
                    "&fields=nextPageToken,items(id,summary,description,status,"
                    "htmlLink,location,organizer(email,displayName),"

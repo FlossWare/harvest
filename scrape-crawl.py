@@ -16,6 +16,7 @@ pages only, proper User-Agent, resumable (skips slugs already on disk).
 """
 import json, re, sys, time, urllib.request
 from collections import deque
+import hashlib
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, urldefrag, urljoin
@@ -42,7 +43,7 @@ class PageParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self._all, self._main = [], []
-        self._skip_stack, self._in_main = [], 0
+        self._skip_stack, self._main_stack = [], []
         self._title, self._in_title = [], False
         self.links = []
 
@@ -56,7 +57,7 @@ class PageParser(HTMLParser):
             if href:
                 self.links.append(href)
         if tag in ("main", "article") or dict(attrs).get("role") == "main":
-            self._in_main += 1
+            self._main_stack.append(tag)
 
     def handle_endtag(self, tag):
         if tag in self._SKIP and tag in self._skip_stack:
@@ -65,12 +66,12 @@ class PageParser(HTMLParser):
                     break
         if tag in self._BLOCK:
             self._all.append("\n")
-            if self._in_main:
+            if self._main_stack:
                 self._main.append("\n")
         if tag == "title":
             self._in_title = False
-        if tag in ("main", "article") and self._in_main:
-            self._in_main -= 1
+        if self._main_stack and tag == self._main_stack[-1]:
+            self._main_stack.pop()
 
     def handle_data(self, data):
         if self._skip_stack:
@@ -78,7 +79,7 @@ class PageParser(HTMLParser):
         if self._in_title:
             self._title.append(data)
         self._all.append(data)
-        if self._in_main:
+        if self._main_stack:
             self._main.append(data)
 
     def text(self):
@@ -104,9 +105,15 @@ def crawl(name, allow, max_pages, seeds):
     out = DEST / f"raw-{name}"
     out.mkdir(parents=True, exist_ok=True)
     allow_re = re.compile(allow)
-    done = {p.stem for p in out.glob("*.json")}
-    count = len(done)
-    seen = set(done)
+    seen = set()
+    for p in out.glob("*.json"):
+        try:
+            u = json.loads(p.read_text(errors="replace")).get("url")
+            if u:
+                seen.add(u)
+        except Exception:
+            pass
+    count = len(seen)
     queue = deque(seeds)
     fetched = 0
     print(f"[{name}] {count} present; crawling seeds {seeds}", flush=True)
@@ -144,13 +151,18 @@ def crawl(name, allow, max_pages, seeds):
         if len(text) < 200:
             time.sleep(1)
             continue
-        if slug in done:
-            continue
+        f = out / f"{slug}.json"
+        if f.exists():
+            try:
+                if json.loads(f.read_text(errors="replace")).get("url") == url:
+                    continue
+            except Exception:
+                pass
+            slug = f"{slug}_{hashlib.sha1(url.encode()).hexdigest()[:8]}"
         (out / f"{slug}.json").write_text(json.dumps(
             {"url": url, "title": title or urlparse(url).path, "content": text[:400_000]}))
         count += 1
         fetched += 1
-        done.add(slug)
         if fetched % 50 == 0:
             print(f"[{name}] {count} total ({fetched} new, {len(queue)} queued)", flush=True)
         time.sleep(1)

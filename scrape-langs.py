@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Standalone language/framework/docs scraper — fully self-contained."""
+import hashlib
 import json, re, time, urllib.request, xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
@@ -124,7 +125,16 @@ def scrape(name, sitemap_url, path_filter, max_pages):
         if path.lower().endswith((".pdf",".png",".jpg",".jpeg",".gif",".zip",".xml",".dtd")): continue
         slug = re.sub(r"[^a-zA-Z0-9_-]+","_",path.strip("/"))[:180] or "index"
         slug = f"{urlparse(url).netloc.split('.')[0]}_{slug}"[:190]
-        if slug in done: continue
+        sf = out / f"{slug}.json"
+        if sf.exists():
+            try:
+                if json.loads(sf.read_text(errors="replace")).get("url") == url:
+                    continue
+            except Exception:
+                pass
+            slug = f"{slug}_{hashlib.sha1(url.encode()).hexdigest()[:8]}"
+            if (out / f"{slug}.json").exists():
+                continue
         try:
             html = fetch(url)
         except Exception:

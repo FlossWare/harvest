@@ -41,7 +41,8 @@ def main():
             break
         time.sleep(RATE)
 
-    with OUT.open("w") as f:
+    tmp = OUT.with_suffix(".json.tmp")
+    with tmp.open("w") as f:
         for p in people:
             name = (p.get("names", [{}])[0].get("displayName", ""))
             emails = ", ".join(e.get("value", "") for e in p.get("emailAddresses", []))
@@ -57,6 +58,7 @@ def main():
                 "resourceName": p.get("resourceName", ""),
                 "raw": p,
             }) + "\n")
+    tmp.replace(OUT)
     print(f"CONTACTS DONE: {len(people)} people", flush=True)
 
 

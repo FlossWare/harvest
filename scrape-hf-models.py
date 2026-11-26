@@ -30,7 +30,7 @@ while listed < TOP:
     try:
         models = json.loads(fetch(url))
     except Exception as e:
-        print(f"list fail page {page}: {e}", flush=True)
+        print(f"list fail at skip={skip}: {e}", flush=True)
         break
     if not models:
         break

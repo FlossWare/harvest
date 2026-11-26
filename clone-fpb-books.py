@@ -25,11 +25,13 @@ candidates = []
 for u in sorted(urls):
     owner, repo = u.split("/")
     repo = repo.removesuffix(".git")
-    if u in SKIP_PREFIX or owner in ("github", "features"):
+    if u.startswith(SKIP_PREFIX) or owner in ("github", "features"):
         continue
-    dirname = f"fpb-{repo}"
-    if dirname in existing or repo in existing:
-        continue
+    # include the owner: fpb-{repo} alone collided for same-named repos
+    # from different owners, permanently skipping the second one
+    dirname = f"fpb-{owner}-{repo}"
+    if dirname in existing or f"fpb-{repo}" in existing:
+        continue  # new name, or legacy fpb-{repo} from the old scheme
     candidates.append((u, dirname))
 
 print(f"{len(urls)} GitHub URLs in catalog; {len(candidates)} not yet cloned; "

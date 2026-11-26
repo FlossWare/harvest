@@ -45,7 +45,7 @@ def sitemap_ok(url):
 
 eligible, skipped_done, skipped_dead = [], [], []
 for name, sitemap, flt, mx in sl.TARGETS:
-    if raw_count(name) > 0:
+    if (DEST / f"raw-{name}" / ".done").exists():
         skipped_done.append(name)
         continue
     if not sitemap_ok(sitemap):
@@ -74,6 +74,8 @@ def run_domain(domain):
                     [sys.executable, str(SOURCES / "scrape-langs.py"), name],
                     cwd=str(SOURCES), stdout=f, stderr=subprocess.STDOUT)
             print(f"[{name}] exit {r.returncode}", flush=True)
+            if r.returncode == 0:
+                (DEST / f"raw-{name}" / ".done").write_text("ok")
         except Exception as e:
             print(f"[{name}] DRIVER ERROR: {e}", flush=True)
 

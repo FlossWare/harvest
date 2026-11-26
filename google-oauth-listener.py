@@ -99,9 +99,14 @@ for redirect_uri in (f'http://localhost:{PORT}', 'http://localhost'):
         'redirect_uri_used': redirect_uri,
         'created': __import__('datetime').datetime.now().isoformat(),
     }
-    with open(OUT_FILE, 'w') as f:
+    import os as _os
+    tmp = OUT_FILE + '.tmp'
+    fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+    with _os.fdopen(fd, 'w') as f:
         json.dump(payload, f, indent=2)
-    os.chmod(OUT_FILE, 0o600)
+        f.flush()
+        _os.fsync(f.fileno())
+    _os.replace(tmp, OUT_FILE)
     print('SUCCESS: refresh token stored in', OUT_FILE)
     print('scopes granted:', resp.get('scope'))
     sys.exit(0)
