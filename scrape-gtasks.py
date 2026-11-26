@@ -22,17 +22,25 @@ RATE = 0.3
 def main():
     print(f"account={ACCOUNT} ({resolve(ACCOUNT)['email']}) -> {OUT}", flush=True)
     lists, token = [], None
-    while True:
-        url = ("https://tasks.googleapis.com/tasks/v1/users/@me/lists"
-               "?maxResults=100&fields=nextPageToken,items(id,title,updated)")
-        if token:
-            url += f"&pageToken={token}"
-        d = api(url, ACCOUNT)
-        lists.extend(d.get("items", []))
-        token = d.get("nextPageToken")
-        if not token:
-            break
-        time.sleep(RATE)
+    try:
+        while True:
+            url = ("https://tasks.googleapis.com/tasks/v1/users/@me/lists"
+                   "?maxResults=100&fields=nextPageToken,items(id,title,updated)")
+            if token:
+                url += f"&pageToken={token}"
+            d = api(url, ACCOUNT)
+            lists.extend(d.get("items", []))
+            token = d.get("nextPageToken")
+            if not token:
+                break
+            time.sleep(RATE)
+    except Exception as e:
+        # an admin-blocked API (403) must not crash the sync — log and
+        # finish cleanly so the other account still runs
+        print(f"  tasklists: {e}", flush=True)
+        print("TASKS DONE: 0 tasks (list enumeration denied for this account)",
+              flush=True)
+        return
 
     total = 0
     with OUT.open("w") as f:
